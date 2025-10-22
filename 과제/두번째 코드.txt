@@ -1,0 +1,134 @@
+///////////////////////////////////////////////////////////////
+2번째 코드
+
+import numpy as np
+import torch
+import random
+from agents.rl.submission import agent as rl_agent
+from env.chooseenv import make
+from tabulate import tabulate
+import argparse
+import os
+
+# =======================
+# 행동 공간 최적화
+# =======================
+optimized_actions_map = {}
+idx = 0
+for force in [-40, 20, 80, 140]:                                                                  - 원래의 36개의 행동을 의미 잇는 12개의 행동으로 줄임
+    for angle in [-18, 0, 18]:
+        optimized_actions_map[idx] = [force, angle]                                     - 힘과 방향 조합만 사용
+        idx += 1
+
+def clip_action(driving_force, turning_angle):
+    driving_force = np.clip(driving_force, -40, 140)
+    turning_angle = np.clip(turning_angle, -18, 18)                                    - 행동이 환경 범위를 벗어나지 않도록 제한
+    return driving_force, turning_angle
+
+# =======================
+# 행동 선택 함수
+# =======================
+def get_join_actions(state, algo_list):
+    joint_actions = []
+
+    for agent_idx in range(len(algo_list)):
+        if algo_list[agent_idx] == 'random':
+            driving_force = random.uniform(-40, 140)
+            turning_angle = random.uniform(-18, 18)                                          # 안전 범위 내에서 랜덤 행동 생성
+            joint_actions.append([[driving_force], [turning_angle]])
+
+        elif algo_list[agent_idx] == 'rl':                                            # RL 에어전트의 관찰(obs)를 기반으로 행동 선택
+            obs = state[agent_idx]['obs'].flatten()                                - choose_action(obs)는 학습된 정책에 따라 행동 ID  반환
+            # 기존 RL 에이전트 행동 선택                                          - optimized_actions_map에서 실제 힘과 각도로 변환
+            actions_raw = rl_agent.choose_action(obs) 
+            actions = optimized_actions_map.get(actions_raw, [0, 0])
+            driving_force, turning_angle = clip_action(actions[0], actions[1])
+            joint_actions.append([[driving_force], [turning_angle]])
+
+    return joint_actions
+
+# =======================
+# 게임 실행
+# =======================
+RENDER = True
+
+def run_game(env, algo_list, episode, shuffle_map, map_num, verbose=False):
+    total_reward = np.zeros(2)
+    num_win = np.zeros(3)
+    total_steps = []
+
+    for i in range(1, int(episode)+1):
+        episode_reward = np.zeros(2)
+        state = env.reset(shuffle_map)
+        if RENDER:
+            env.env_core.render()
+
+        step = 0
+
+        while True:
+            joint_action = get_join_actions(state, algo_list)
+            next_state, reward, done, _, info = env.step(joint_action)
+            reward = np.array(reward)
+            episode_reward += reward
+            if RENDER:
+                env.env_core.render()
+
+            step += 1
+
+            if done:
+                if reward[0] != reward[1]:
+                    if reward[0] == 100:
+                        num_win[0] += 1
+                        total_steps.append(step)
+                    elif reward[1] == 100:
+                        num_win[1] += 1
+                        total_steps.append(step)
+                    else:
+                        raise NotImplementedError
+                else:
+                    num_win[2] += 1
+
+                if not verbose:
+                    print('.', end='')
+                    if i % 100 == 0 or i == episode:
+                        print()
+                break
+
+            state = next_state
+
+        total_reward += episode_reward
+
+    total_reward /= episode
+    average_steps = np.mean(total_steps) if total_steps else 0
+    print("total reward: ", total_reward)
+    print('Result in map {} within {} episode:'.format(map_num, episode))
+
+    header = ['Name', algo_list[0], algo_list[1]]
+    data = [['score', np.round(total_reward[0], 2), np.round(total_reward[1], 2)],
+            ['win', num_win[0], num_win[1]],
+            ['avg_steps', average_steps, '-']]
+    print(tabulate(data, headers=header, tablefmt='pretty'))
+
+# =======================
+# 메인
+# =======================
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--my_ai", default='rl', help='rl/random')
+    parser.add_argument("--opponent", default='random', help='rl/random')
+    parser.add_argument("--episode", default=20)
+    parser.add_argument("--map", default='all', help='1/2/3/4/all')
+    args = parser.parse_args()
+
+    env_type = "olympics-running"
+    game = make(env_type, conf=None, seed=1)
+
+    if args.map != 'all':
+        game.specify_a_map(int(args.map))
+        shuffle = False
+    else:
+        shuffle = True
+
+    agent_list = [args.opponent, args.my_ai]
+    run_game(game, algo_list=agent_list, episode=args.episode, shuffle_map=shuffle, map_num=args.map, verbose=False)
+
